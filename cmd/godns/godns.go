@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"io/ioutil"
 
 	"log"
 
@@ -16,6 +17,7 @@ var (
 	configuration godns.Settings
 	optConf       = flag.String("c", "./config.json", "Specify a config file")
 	optHelp       = flag.Bool("h", false, "Show help")
+	optSilent     = flag.Bool("s", false, "Disable any log")
 
 	// Version is current version of GoDNS
 	Version = "0.1"
@@ -27,6 +29,10 @@ func main() {
 		color.Cyan(godns.Logo, Version)
 		flag.Usage()
 		return
+	}
+
+	if *optSilent {
+		log.SetOutput(ioutil.Discard)
 	}
 
 	// Load settings from configurations file
