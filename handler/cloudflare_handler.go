@@ -11,7 +11,7 @@ import (
 	"runtime/debug"
 	"time"
 
-	"github.com/TimothyYe/godns"
+	"github.com/0987363/godns"
 	"golang.org/x/net/proxy"
 )
 

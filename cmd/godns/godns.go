@@ -7,8 +7,8 @@ import (
 
 	"log"
 
-	"github.com/TimothyYe/godns"
-	"github.com/TimothyYe/godns/handler"
+	"github.com/0987363/godns"
+	"github.com/0987363/godns/handler"
 	"github.com/fatih/color"
 )
 

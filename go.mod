@@ -1,4 +1,4 @@
-module github.com/TimothyYe/godns
+module github.com/0987363/godns
 
 require (
 	github.com/bitly/go-simplejson v0.5.0

@@ -12,19 +12,68 @@ import (
 	"strings"
 	"time"
 
-	"github.com/TimothyYe/godns"
+	"github.com/0987363/godns"
+	"github.com/0987363/godns/models"
 	"github.com/bitly/go-simplejson"
 	"golang.org/x/net/proxy"
 )
 
 // DNSPodHandler struct definition
 type DNSPodHandler struct {
+	LastIP	string
 	Configuration *godns.Settings
 }
 
 // SetConfiguration pass dns settings and store it to handler instance
 func (handler *DNSPodHandler) SetConfiguration(conf *godns.Settings) {
 	handler.Configuration = conf
+}
+
+// Run the main logic
+func (handler *DNSPodHandler) Run(domain *godns.Domain) error {
+	log.Printf("Checking IP for domain %s \r\n", domain.DomainName)
+	domainID, err := handler.GetDomain(domain.DomainName)
+	if err != nil {
+		return err
+	}
+
+	currentIP, err := godns.GetCurrentIP(handler.Configuration)
+	if err != nil {
+		return models.Error("get_currentIP:", err)
+	}
+	log.Println("currentIP is:", currentIP)
+
+	//check against locally cached IP, if no change, skip update
+	if currentIP == handler.LastIP {
+		log.Printf("IP is the same as cached one. Skip update.\n")
+	} else {
+		handler.LastIP = currentIP
+
+		for _, subDomain := range domain.SubDomains {
+			subDomainID, ip, err := handler.GetSubDomain(domainID, subDomain)
+			if err != nil {
+				log.Printf("Get sub domain failed: %v, %s.%s subDomainID: %s ip: %s\n", err, subDomain, domain.DomainName, subDomainID, ip)
+				continue
+			}
+
+			// Continue to check the IP of sub-domain
+			if len(ip) > 0 && strings.TrimRight(currentIP, "\n") != strings.TrimRight(ip, "\n") {
+				log.Printf("%s.%s Start to update record IP...\n", subDomain, domain.DomainName)
+				handler.UpdateIP(domainID, subDomainID, subDomain, currentIP)
+
+				// Send mail notification if notify is enabled
+				if handler.Configuration.Notify.Enabled {
+					log.Print("Sending notification to:", handler.Configuration.Notify.SendTo)
+					godns.SendNotify(handler.Configuration, fmt.Sprintf("%s.%s", subDomain, domain.DomainName), currentIP)
+				}
+
+			} else {
+				log.Printf("%s.%s Current IP is same as domain IP, no need to update...\n", subDomain, domain.DomainName)
+			}
+		}
+	}
+
+	return nil
 }
 
 // DomainLoop the main logic loop
@@ -36,55 +85,12 @@ func (handler *DNSPodHandler) DomainLoop(domain *godns.Domain, panicChan chan<- 
 		}
 	}()
 
-	var lastIP string
 	for {
-		log.Printf("Checking IP for domain %s \r\n", domain.DomainName)
-		domainID := handler.GetDomain(domain.DomainName)
-
-		if domainID == -1 {
+		if err := handler.Run(domain); err != nil {
+			log.Println(err)
+			time.Sleep(time.Second * godns.INTERVAL)
 			continue
 		}
-
-		currentIP, err := godns.GetCurrentIP(handler.Configuration)
-
-		if err != nil {
-			log.Println("get_currentIP:", err)
-			continue
-		}
-		log.Println("currentIP is:", currentIP)
-
-		//check against locally cached IP, if no change, skip update
-		if currentIP == lastIP {
-			log.Printf("IP is the same as cached one. Skip update.\n")
-		} else {
-			lastIP = currentIP
-
-			for _, subDomain := range domain.SubDomains {
-
-				subDomainID, ip := handler.GetSubDomain(domainID, subDomain)
-
-				if subDomainID == "" || ip == "" {
-					log.Printf("domain: %s.%s subDomainID: %s ip: %s\n", subDomain, domain.DomainName, subDomainID, ip)
-					continue
-				}
-
-				// Continue to check the IP of sub-domain
-				if len(ip) > 0 && strings.TrimRight(currentIP, "\n") != strings.TrimRight(ip, "\n") {
-					log.Printf("%s.%s Start to update record IP...\n", subDomain, domain.DomainName)
-					handler.UpdateIP(domainID, subDomainID, subDomain, currentIP)
-
-					// Send mail notification if notify is enabled
-					if handler.Configuration.Notify.Enabled {
-						log.Print("Sending notification to:", handler.Configuration.Notify.SendTo)
-						godns.SendNotify(handler.Configuration, fmt.Sprintf("%s.%s", subDomain, domain.DomainName), currentIP)
-					}
-
-				} else {
-					log.Printf("%s.%s Current IP is same as domain IP, no need to update...\n", subDomain, domain.DomainName)
-				}
-			}
-		}
-		// Interval is 5 minutes
 		log.Printf("Going to sleep, will start next checking in %d minutes...\r\n", godns.INTERVAL)
 		time.Sleep(time.Minute * godns.INTERVAL)
 	}
@@ -111,7 +117,7 @@ func (handler *DNSPodHandler) GenerateHeader(content url.Values) url.Values {
 }
 
 // GetDomain returns specific domain by name
-func (handler *DNSPodHandler) GetDomain(name string) int64 {
+func (handler *DNSPodHandler) GetDomain(name string) (int64, error) {
 
 	var ret int64
 	values := url.Values{}
@@ -120,17 +126,13 @@ func (handler *DNSPodHandler) GetDomain(name string) int64 {
 	values.Add("length", "20")
 
 	response, err := handler.PostData("/Domain.List", values)
-
 	if err != nil {
-		log.Println("Failed to get domain list...")
-		return -1
+		return -1, models.Error("Failed to get domain list:", err)
 	}
 
 	sjson, parseErr := simplejson.NewJson([]byte(response))
-
 	if parseErr != nil {
-		log.Println(parseErr)
-		return -1
+		return -1, models.Error("New json failed:", parseErr)
 	}
 
 	if sjson.Get("status").Get("code").MustString() == "1" {
@@ -156,11 +158,11 @@ func (handler *DNSPodHandler) GetDomain(name string) int64 {
 		log.Println("get_domain:status code:", sjson.Get("status").Get("code").MustString())
 	}
 
-	return ret
+	return ret, nil
 }
 
 // GetSubDomain returns subdomain by domain id
-func (handler *DNSPodHandler) GetSubDomain(domainID int64, name string) (string, string) {
+func (handler *DNSPodHandler) GetSubDomain(domainID int64, name string) (string, string, error) {
 	log.Println("debug:", domainID, name)
 	var ret, ip string
 	value := url.Values{}
@@ -170,17 +172,13 @@ func (handler *DNSPodHandler) GetSubDomain(domainID int64, name string) (string,
 	value.Add("sub_domain", name)
 
 	response, err := handler.PostData("/Record.List", value)
-
 	if err != nil {
-		log.Println("Failed to get domain list")
-		return "", ""
+		return "", "", models.Error("Failed to get domain list:", err)
 	}
 
 	sjson, parseErr := simplejson.NewJson([]byte(response))
-
 	if parseErr != nil {
-		log.Println(parseErr)
-		return "", ""
+		return "", "", parseErr
 	}
 
 	if sjson.Get("status").Get("code").MustString() == "1" {
@@ -201,7 +199,7 @@ func (handler *DNSPodHandler) GetSubDomain(domainID int64, name string) (string,
 		log.Println("get_subdomain:status code:", sjson.Get("status").Get("code").MustString())
 	}
 
-	return ret, ip
+	return ret, ip, nil
 }
 
 // UpdateIP update subdomain with current IP
